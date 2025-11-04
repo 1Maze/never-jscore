@@ -1,4 +1,4 @@
-# PyExecJS-RS 中文文档
+# never_jscore 中文文档
 
 基于 Deno Core (V8) 的高性能 Python JavaScript 执行引擎。
 
@@ -21,14 +21,13 @@
 
 ## 性能对比
 
-| 测试项目 | PyExecJS-RS | PyMiniRacer | PyExecJS |
+| 测试项目 | never_jscore | PyMiniRacer | PyExecJS |
 |---------|-------------|-------------|----------|
 | 简单计算 | 0.012ms | 0.005ms | 2.3ms |
 | 字符串操作 | **0.004ms** 🏆 | 0.008ms | 2.3ms |
 | 数组操作 | **0.004ms** 🏆 | 0.006ms | 2.3ms |
 | Promise | **✅ 0.003ms** | ❌ 不支持 | ❌ 不支持 |
 
-📊 详细性能报告: [OPTIMIZATION_REPORT.md](OPTIMIZATION_REPORT.md)
 
 ## 安装
 
