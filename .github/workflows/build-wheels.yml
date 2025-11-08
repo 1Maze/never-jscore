@@ -1,0 +1,216 @@
+name: Build Wheels
+
+on:
+  push:
+    tags:
+      - 'v*'  # 当推送 v* 标签时触发（如 v2.1.0）
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:  # 允许手动触发
+
+env:
+  # 使用预编译的 V8，避免从源码编译
+  V8_FROM_SOURCE: 0
+  # Rust 编译缓存
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # sccache 配置
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
+
+jobs:
+  # Linux 构建（使用 manylinux 容器支持更多发行版）
+  build_wheels_manylinux:
+    name: Build manylinux wheels
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12']
+        target: [x86_64]  # aarch64 需要 QEMU，编译时间过长，可选
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}-${{ matrix.python-version }}
+          cache-on-failure: true
+          # 缓存 V8 构建产物
+          cache-directories: |
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --strip --out dist -i python${{ matrix.python-version }}
+          manylinux: auto
+          # 使用 sccache 加速编译
+          sccache: 'true'
+          # 避免从源码编译 V8
+          before-script-linux: |
+            export V8_FROM_SOURCE=0
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: manylinux-wheels-${{ matrix.target }}-py${{ matrix.python-version }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  # macOS 构建（包含 x86_64 和 Apple Silicon）
+  build_wheels_macos:
+    name: Build macOS universal wheels
+    runs-on: macos-13  # 使用 Intel Mac，编译更稳定
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-${{ matrix.python-version }}
+          cache-on-failure: true
+
+      - name: Build wheels (Universal2)
+        uses: PyO3/maturin-action@v1
+        with:
+          target: universal2-apple-darwin
+          args: --release --strip --out dist -i python${{ matrix.python-version }}
+          sccache: 'true'
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal-wheels-py${{ matrix.python-version }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  # Windows 构建
+  build_wheels_windows:
+    name: Build Windows wheels
+    runs-on: windows-2022  # 使用较新的 Windows runner
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12']
+        target: [x64]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          architecture: ${{ matrix.target }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-${{ matrix.python-version }}
+          cache-on-failure: true
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64-pc-windows-msvc
+          args: --release --strip --out dist -i python${{ matrix.python-version }}
+          sccache: 'true'
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-wheels-py${{ matrix.python-version }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  # 构建源码分发包（sdist）
+  build_sdist:
+    name: Build source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build sdist
+        run: maturin sdist --out dist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # 发布到 PyPI（仅在推送 tag 时）
+  release:
+    name: Release to PyPI
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - build_wheels_manylinux
+      - build_wheels_macos
+      - build_wheels_windows
+      - build_sdist
+    permissions:
+      id-token: write  # 用于 PyPI trusted publishing
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List all files
+        run: ls -lah dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}
